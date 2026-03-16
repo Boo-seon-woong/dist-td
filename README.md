@@ -23,15 +23,15 @@ make -C tee-dist
 MN 3개를 먼저 띄운다.
 
 ```bash
-./bin/mn --config/build/config/mn1.conf
-./bin/mn --config/build/config/mn2.conf
-./bin/mn --config/build/config/mn3.conf
+./bin/mn --config build/config/mn1.conf
+./bin/mn --config build/config/mn2.conf
+./bin/mn --config build/config/mn3.conf
 ```
 
 그 다음 CN REPL을 실행한다.
 
 ```bash
-./bin/cn --config/build/config/cn.conf
+./bin/cn --config build/config/cn.conf
 ```
 
 REPL 명령:

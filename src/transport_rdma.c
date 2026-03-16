@@ -87,7 +87,7 @@ static int td_rdma_wait_event(struct rdma_event_channel *ec, enum rdma_cm_event_
         return -1;
     }
     if (event->event != expected) {
-        td_format_error(err, err_len, "unexpected rdma cm event %d", event->event);
+        td_format_error(err, err_len, "unexpected rdma cm event %s(%d)", rdma_event_str(event->event), event->event);
         rdma_ack_cm_event(event);
         return -1;
     }
@@ -568,32 +568,55 @@ int td_rdma_server_run(const td_config_t *cfg, td_local_region_t *region, volati
                 td_rdma_server_conn_t *conn = (td_rdma_server_conn_t *)calloc(1, sizeof(*conn));
                 pthread_t thread;
                 if (conn != NULL) {
+                    int accepted = 0;
+                    err[0] = '\0';
                     conn->impl.id = event->id;
                     conn->region = region;
                     conn->eviction_threshold_pct = cfg->eviction_threshold_pct;
                     conn->stop_flag = stop_flag;
-                    if (td_rdma_setup_qp(&conn->impl, sizeof(td_slot_t), err, err_len) == 0 &&
-                        (conn->region_mr = ibv_reg_mr(conn->impl.pd, region->base, region->mapped_bytes,
-                            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC)) != NULL &&
-                        td_rdma_post_recv(&conn->impl, err, err_len) == 0) {
+                    if (td_rdma_setup_qp(&conn->impl, sizeof(td_slot_t), err, err_len) == 0) {
+                        conn->region_mr = ibv_reg_mr(conn->impl.pd, region->base, region->mapped_bytes,
+                            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC);
+                        if (conn->region_mr == NULL) {
+                            td_format_error(err, err_len, "ibv_reg_mr failed");
+                        }
+                    }
+                    if (conn->region_mr != NULL && td_rdma_post_recv(&conn->impl, err, err_len) == 0) {
                         struct rdma_conn_param conn_param;
                         memset(&conn_param, 0, sizeof(conn_param));
                         conn_param.initiator_depth = 1;
                         conn_param.responder_resources = 1;
                         conn_param.retry_count = 7;
                         conn_param.rnr_retry_count = 7;
-                        if (rdma_accept(event->id, &conn_param) == 0 && pthread_create(&thread, NULL, td_rdma_server_conn_main, conn) == 0) {
-                            pthread_detach(thread);
-                            conn = NULL;
+                        if (rdma_accept(event->id, &conn_param) == 0) {
+                            if (pthread_create(&thread, NULL, td_rdma_server_conn_main, conn) == 0) {
+                                pthread_detach(thread);
+                                accepted = 1;
+                                conn = NULL;
+                            } else {
+                                td_format_error(err, err_len, "pthread_create failed");
+                            }
+                        } else {
+                            td_format_error(err, err_len, "rdma_accept failed");
                         }
                     }
                     if (conn != NULL) {
+                        if (err[0] == '\0') {
+                            td_format_error(err, err_len, "rdma accept path failed before accept");
+                        }
+                        fprintf(stderr, "tee-dist rdma reject on %s:%d: %s\n", cfg->listen_host, cfg->listen_port, err);
+                        if (!accepted) {
+                            (void)rdma_reject(event->id, NULL, 0);
+                        }
                         if (conn->region_mr != NULL) {
                             ibv_dereg_mr(conn->region_mr);
                         }
                         td_rdma_destroy_impl(&conn->impl);
                         free(conn);
                     }
+                } else {
+                    fprintf(stderr, "tee-dist rdma reject on %s:%d: out of memory\n", cfg->listen_host, cfg->listen_port);
+                    (void)rdma_reject(event->id, NULL, 0);
                 }
             }
             rdma_ack_cm_event(event);
