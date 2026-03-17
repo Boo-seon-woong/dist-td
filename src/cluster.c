@@ -55,13 +55,16 @@ static int td_slot_present(const td_slot_t *slot, uint64_t key_hash) {
            (slot->flags & TD_SLOT_FLAG_TOMBSTONE) == 0;
 }
 
-static int td_fetch_slot_at(td_session_t *session, td_region_kind_t kind, size_t slot_index, td_slot_t *slot, uint64_t *latency_ns, char *err, size_t err_len) {
+static int td_fetch_slot_at(td_session_t *session, td_region_kind_t kind, size_t slot_index, td_slot_t *slot, uint64_t *latency_ns, size_t *read_count, char *err, size_t err_len) {
     size_t offset = td_region_slot_offset_for_index(&session->header, kind, slot_index);
     uint64_t start_ns = latency_ns != NULL ? td_now_ns() : 0;
     int rc = session->read_region(session, offset, slot, sizeof(*slot), err, err_len);
 
     if (latency_ns != NULL && start_ns != 0) {
         *latency_ns += td_now_ns() - start_ns;
+    }
+    if (read_count != NULL) {
+        ++(*read_count);
     }
     return rc;
 }
@@ -88,7 +91,7 @@ static int td_commit_slot_at(td_session_t *session, td_region_kind_t kind, size_
     return 0;
 }
 
-static int td_probe_slot(td_session_t *session, td_region_kind_t kind, uint64_t key_hash, td_slot_probe_t *probe, uint64_t *latency_ns, char *err, size_t err_len) {
+static int td_probe_slot(td_session_t *session, td_region_kind_t kind, uint64_t key_hash, td_slot_probe_t *probe, uint64_t *latency_ns, size_t *read_count, char *err, size_t err_len) {
     size_t count = td_region_kind_slot_count(&session->header, kind);
     size_t home = td_region_slot_index(&session->header, kind, key_hash);
     size_t idx;
@@ -103,7 +106,7 @@ static int td_probe_slot(td_session_t *session, td_region_kind_t kind, uint64_t 
         size_t slot_index = (home + idx) % count;
         td_slot_t slot;
 
-        if (td_fetch_slot_at(session, kind, slot_index, &slot, latency_ns, err, err_len) != 0) {
+        if (td_fetch_slot_at(session, kind, slot_index, &slot, latency_ns, read_count, err, err_len) != 0) {
             return -1;
         }
 
@@ -164,7 +167,7 @@ static int td_wait_for_primary_change(td_cluster_t *cluster, uint64_t key_hash, 
 
     for (attempts = 0; attempts < 50; ++attempts) {
         td_slot_probe_t probe;
-        if (td_probe_slot(primary, TD_REGION_PRIME, key_hash, &probe, NULL, err, sizeof(err)) == 0 &&
+        if (td_probe_slot(primary, TD_REGION_PRIME, key_hash, &probe, NULL, NULL, err, sizeof(err)) == 0 &&
             (!probe.found || probe.slot.guard_epoch != old_epoch)) {
             return 0;
         }
@@ -184,7 +187,7 @@ static void td_refresh_cache_best_effort(td_cluster_t *cluster, const char *key,
     if (cluster->config.cache == TD_CACHE_OFF) {
         return;
     }
-    if (td_probe_slot(primary, TD_REGION_CACHE, key_hash, &probe, profile != NULL ? &profile->refresh_cache_probe_ns : NULL, err, sizeof(err)) != 0 || !probe.candidate_valid) {
+    if (td_probe_slot(primary, TD_REGION_CACHE, key_hash, &probe, profile != NULL ? &profile->refresh_cache_probe_ns : NULL, profile != NULL ? &profile->refresh_cache_probe_reads : NULL, err, sizeof(err)) != 0 || !probe.candidate_valid) {
         return;
     }
     (void)td_commit_slot_at(primary, TD_REGION_CACHE, probe.candidate_slot_index, slot, probe.candidate_slot.guard_epoch, &observed, profile != NULL ? &timing : NULL, err, sizeof(err));
@@ -213,21 +216,26 @@ static int td_cluster_read_value(td_cluster_t *cluster, const char *key, unsigne
     }
     primary = td_primary_session(cluster, key_hash);
 
-    if (td_probe_slot(primary, TD_REGION_PRIME, key_hash, &prime_probe, profile != NULL ? &profile->prime_probe_ns : NULL, err, err_len) != 0) {
+    if (td_probe_slot(primary, TD_REGION_PRIME, key_hash, &prime_probe, profile != NULL ? &profile->prime_probe_ns : NULL, profile != NULL ? &profile->prime_probe_reads : NULL, err, err_len) != 0) {
         return -1;
     }
 
     if (cluster->config.cache == TD_CACHE_ON) {
-        if (td_probe_slot(primary, TD_REGION_CACHE, key_hash, &cache_probe, profile != NULL ? &profile->cache_probe_ns : NULL, err, err_len) == 0 &&
+        if (td_probe_slot(primary, TD_REGION_CACHE, key_hash, &cache_probe, profile != NULL ? &profile->cache_probe_ns : NULL, profile != NULL ? &profile->cache_probe_reads : NULL, err, err_len) == 0 &&
             cache_probe.found &&
             prime_probe.found &&
             cache_probe.slot.guard_epoch == prime_probe.slot.guard_epoch &&
             cache_probe.slot.visible_epoch == prime_probe.slot.visible_epoch &&
             td_slot_present(&cache_probe.slot, key_hash)) {
+            td_crypto_profile_t crypto_profile;
+
+            memset(&crypto_profile, 0, sizeof(crypto_profile));
             start_ns = td_profile_begin(profile);
-            if (td_crypto_decode_slot(&cluster->crypto, key, &cache_probe.slot, value, value_len) == 0) {
+            if (td_crypto_decode_slot_profiled(&cluster->crypto, key, &cache_probe.slot, value, value_len, profile != NULL ? &crypto_profile : NULL) == 0) {
                 if (profile != NULL) {
                     td_profile_end(profile, start_ns, &profile->cache_decode_ns);
+                    profile->crypto_verify_mac_ns += crypto_profile.verify_mac_ns;
+                    profile->crypto_decrypt_ns += crypto_profile.decrypt_ns;
                 }
                 if (profile != NULL) {
                     profile->cache_hit = 1;
@@ -237,6 +245,8 @@ static int td_cluster_read_value(td_cluster_t *cluster, const char *key, unsigne
             }
             if (profile != NULL) {
                 td_profile_end(profile, start_ns, &profile->cache_decode_ns);
+                profile->crypto_verify_mac_ns += crypto_profile.verify_mac_ns;
+                profile->crypto_decrypt_ns += crypto_profile.decrypt_ns;
             }
         }
     }
@@ -244,16 +254,25 @@ static int td_cluster_read_value(td_cluster_t *cluster, const char *key, unsigne
     if (!prime_probe.found || !td_slot_present(&prime_probe.slot, key_hash)) {
         return 0;
     }
-    start_ns = td_profile_begin(profile);
-    if (td_crypto_decode_slot(&cluster->crypto, key, &prime_probe.slot, value, value_len) != 0) {
+    {
+        td_crypto_profile_t crypto_profile;
+
+        memset(&crypto_profile, 0, sizeof(crypto_profile));
+        start_ns = td_profile_begin(profile);
+        if (td_crypto_decode_slot_profiled(&cluster->crypto, key, &prime_probe.slot, value, value_len, profile != NULL ? &crypto_profile : NULL) != 0) {
+            if (profile != NULL) {
+                td_profile_end(profile, start_ns, &profile->prime_decode_ns);
+                profile->crypto_verify_mac_ns += crypto_profile.verify_mac_ns;
+                profile->crypto_decrypt_ns += crypto_profile.decrypt_ns;
+            }
+            td_format_error(err, err_len, "mac verification failed for key %s", key);
+            return -1;
+        }
         if (profile != NULL) {
             td_profile_end(profile, start_ns, &profile->prime_decode_ns);
+            profile->crypto_verify_mac_ns += crypto_profile.verify_mac_ns;
+            profile->crypto_decrypt_ns += crypto_profile.decrypt_ns;
         }
-        td_format_error(err, err_len, "mac verification failed for key %s", key);
-        return -1;
-    }
-    if (profile != NULL) {
-        td_profile_end(profile, start_ns, &profile->prime_decode_ns);
     }
     td_refresh_cache_best_effort(cluster, key, &prime_probe.slot, profile);
     *found = 1;
@@ -319,7 +338,7 @@ static int td_cluster_write_value(td_cluster_t *cluster, const char *key, const 
         profile->backup_targets = backup_count;
     }
 
-    if (td_probe_slot(primary, TD_REGION_PRIME, key_hash, &primary_probe, profile != NULL ? &profile->prime_probe_ns : NULL, err, err_len) != 0) {
+    if (td_probe_slot(primary, TD_REGION_PRIME, key_hash, &primary_probe, profile != NULL ? &profile->prime_probe_ns : NULL, profile != NULL ? &profile->prime_probe_reads : NULL, err, err_len) != 0) {
         return -1;
     }
     current_epoch = primary_probe.candidate_slot.guard_epoch;
@@ -328,23 +347,39 @@ static int td_cluster_write_value(td_cluster_t *cluster, const char *key, const 
         return -1;
     }
 
-    start_ns = td_profile_begin(profile);
-    if (td_crypto_make_slot(
-            &cluster->crypto,
-            key,
-            value,
-            value_len,
-            tombstone ? (TD_SLOT_FLAG_VALID | TD_SLOT_FLAG_TOMBSTONE) : TD_SLOT_FLAG_VALID,
-            current_epoch + 1,
-            &proposal) != 0) {
+    {
+        td_crypto_profile_t crypto_profile;
+
+        memset(&crypto_profile, 0, sizeof(crypto_profile));
+        start_ns = td_profile_begin(profile);
+        if (td_crypto_make_slot_profiled(
+                &cluster->crypto,
+                key,
+                value,
+                value_len,
+                tombstone ? (TD_SLOT_FLAG_VALID | TD_SLOT_FLAG_TOMBSTONE) : TD_SLOT_FLAG_VALID,
+                current_epoch + 1,
+                &proposal,
+                profile != NULL ? &crypto_profile : NULL) != 0) {
+            if (profile != NULL) {
+                td_profile_end(profile, start_ns, &profile->crypto_encode_ns);
+                profile->crypto_slot_hash_ns += crypto_profile.slot_hash_ns;
+                profile->crypto_tie_breaker_ns += crypto_profile.tie_breaker_ns;
+                profile->crypto_iv_ns += crypto_profile.iv_ns;
+                profile->crypto_encrypt_ns += crypto_profile.encrypt_ns;
+                profile->crypto_mac_ns += crypto_profile.mac_ns;
+            }
+            td_format_error(err, err_len, "cannot prepare encrypted slot");
+            return -1;
+        }
         if (profile != NULL) {
             td_profile_end(profile, start_ns, &profile->crypto_encode_ns);
+            profile->crypto_slot_hash_ns += crypto_profile.slot_hash_ns;
+            profile->crypto_tie_breaker_ns += crypto_profile.tie_breaker_ns;
+            profile->crypto_iv_ns += crypto_profile.iv_ns;
+            profile->crypto_encrypt_ns += crypto_profile.encrypt_ns;
+            profile->crypto_mac_ns += crypto_profile.mac_ns;
         }
-        td_format_error(err, err_len, "cannot prepare encrypted slot");
-        return -1;
-    }
-    if (profile != NULL) {
-        td_profile_end(profile, start_ns, &profile->crypto_encode_ns);
     }
 
     for (idx = 0; idx < backup_count; ++idx) {
@@ -353,7 +388,7 @@ static int td_cluster_write_value(td_cluster_t *cluster, const char *key, const 
         td_commit_timing_t timing = {0};
         uint64_t prior_epoch = 0;
 
-        if (td_probe_slot(backup, TD_REGION_BACKUP, key_hash, &probe, profile != NULL ? &profile->backup_probe_ns : NULL, err, err_len) != 0 || !probe.candidate_valid) {
+        if (td_probe_slot(backup, TD_REGION_BACKUP, key_hash, &probe, profile != NULL ? &profile->backup_probe_ns : NULL, profile != NULL ? &profile->backup_probe_reads : NULL, err, err_len) != 0 || !probe.candidate_valid) {
             return -1;
         }
         prior_epoch = probe.candidate_slot.guard_epoch;
@@ -410,7 +445,7 @@ static int td_cluster_write_value(td_cluster_t *cluster, const char *key, const 
             if (profile != NULL) {
                 ++profile->repair_attempts;
             }
-            if (td_probe_slot(backup, TD_REGION_BACKUP, key_hash, &probe, profile != NULL ? &profile->repair_probe_ns : NULL, err, err_len) == 0 && probe.candidate_valid) {
+            if (td_probe_slot(backup, TD_REGION_BACKUP, key_hash, &probe, profile != NULL ? &profile->repair_probe_ns : NULL, profile != NULL ? &profile->repair_probe_reads : NULL, err, err_len) == 0 && probe.candidate_valid) {
                 (void)td_commit_slot_at(backup, TD_REGION_BACKUP, probe.candidate_slot_index, &proposal, probe.candidate_slot.guard_epoch, &observed, profile != NULL ? &timing : NULL, err, sizeof(err));
                 if (profile != NULL) {
                     profile->repair_write_ns += timing.write_ns;
@@ -617,13 +652,27 @@ static void td_print_latency_line(FILE *out, const char *label, uint64_t ns, uin
 }
 
 static void td_print_latency_profile(FILE *out, const td_latency_profile_t *profile) {
+    uint64_t transport_read_ns = profile->prime_probe_ns + profile->cache_probe_ns + profile->backup_probe_ns + profile->repair_probe_ns + profile->refresh_cache_probe_ns;
+    uint64_t transport_write_ns = profile->backup_write_ns + profile->primary_write_ns + profile->repair_write_ns + profile->refresh_cache_write_ns;
+    uint64_t transport_cas_ns = profile->backup_cas_ns + profile->primary_cas_ns + profile->repair_cas_ns + profile->refresh_cache_cas_ns;
+
     fprintf(out, "latency.total_us=%.2f\n", td_ns_to_us(profile->total_ns));
+    td_print_latency_line(out, "transport_read", transport_read_ns, profile->total_ns);
+    td_print_latency_line(out, "transport_write", transport_write_ns, profile->total_ns);
+    td_print_latency_line(out, "transport_cas", transport_cas_ns, profile->total_ns);
     td_print_latency_line(out, "hash", profile->hash_ns, profile->total_ns);
     td_print_latency_line(out, "prime_probe", profile->prime_probe_ns, profile->total_ns);
     td_print_latency_line(out, "cache_probe", profile->cache_probe_ns, profile->total_ns);
     td_print_latency_line(out, "cache_decode", profile->cache_decode_ns, profile->total_ns);
     td_print_latency_line(out, "prime_decode", profile->prime_decode_ns, profile->total_ns);
     td_print_latency_line(out, "crypto_encode", profile->crypto_encode_ns, profile->total_ns);
+    td_print_latency_line(out, "crypto_slot_hash", profile->crypto_slot_hash_ns, profile->total_ns);
+    td_print_latency_line(out, "crypto_tie_breaker", profile->crypto_tie_breaker_ns, profile->total_ns);
+    td_print_latency_line(out, "crypto_iv", profile->crypto_iv_ns, profile->total_ns);
+    td_print_latency_line(out, "crypto_encrypt", profile->crypto_encrypt_ns, profile->total_ns);
+    td_print_latency_line(out, "crypto_mac", profile->crypto_mac_ns, profile->total_ns);
+    td_print_latency_line(out, "crypto_verify_mac", profile->crypto_verify_mac_ns, profile->total_ns);
+    td_print_latency_line(out, "crypto_decrypt", profile->crypto_decrypt_ns, profile->total_ns);
     td_print_latency_line(out, "backup_probe", profile->backup_probe_ns, profile->total_ns);
     td_print_latency_line(out, "backup_write", profile->backup_write_ns, profile->total_ns);
     td_print_latency_line(out, "backup_cas", profile->backup_cas_ns, profile->total_ns);
@@ -639,6 +688,12 @@ static void td_print_latency_profile(FILE *out, const td_latency_profile_t *prof
     fprintf(out, "latency.cache enabled=%s hit=%s\n",
         profile->cache_enabled ? "yes" : "no",
         profile->cache_hit ? "yes" : "no");
+    fprintf(out, "latency.probe_reads prime=%zu cache=%zu backup=%zu repair=%zu cache_refresh=%zu\n",
+        profile->prime_probe_reads,
+        profile->cache_probe_reads,
+        profile->backup_probe_reads,
+        profile->repair_probe_reads,
+        profile->refresh_cache_probe_reads);
     if (profile->backup_targets > 0 || profile->repair_attempts > 0) {
         fprintf(out, "latency.replication backups=%zu successful=%zu repairs=%zu\n",
             profile->backup_targets,

@@ -5,6 +5,16 @@
 #include <openssl/sha.h>
 #include <string.h>
 
+static uint64_t td_crypto_profile_begin(td_crypto_profile_t *profile) {
+    return profile != NULL ? td_now_ns() : 0;
+}
+
+static void td_crypto_profile_end(td_crypto_profile_t *profile, uint64_t start_ns, uint64_t *field) {
+    if (profile != NULL && field != NULL && start_ns != 0) {
+        *field += td_now_ns() - start_ns;
+    }
+}
+
 static void td_sha256_two_parts(const unsigned char *a, size_t a_len, const unsigned char *b, size_t b_len, unsigned char out[SHA256_DIGEST_LENGTH]) {
     SHA256_CTX ctx;
     SHA256_Init(&ctx);
@@ -13,9 +23,11 @@ static void td_sha256_two_parts(const unsigned char *a, size_t a_len, const unsi
     SHA256_Final(out, &ctx);
 }
 
-static int td_crypto_mac(const td_crypto_ctx_t *ctx, const td_slot_t *slot, unsigned char out[32]) {
+static int td_crypto_mac(const td_crypto_ctx_t *ctx, const td_slot_t *slot, unsigned char out[32], uint64_t *latency_ns) {
     unsigned int out_len = 0;
     HMAC_CTX *hctx = HMAC_CTX_new();
+    uint64_t start_ns = latency_ns != NULL ? td_now_ns() : 0;
+
     if (hctx == NULL) {
         return -1;
     }
@@ -32,6 +44,9 @@ static int td_crypto_mac(const td_crypto_ctx_t *ctx, const td_slot_t *slot, unsi
         return -1;
     }
     HMAC_CTX_free(hctx);
+    if (latency_ns != NULL && start_ns != 0) {
+        *latency_ns += td_now_ns() - start_ns;
+    }
     return out_len == 32 ? 0 : -1;
 }
 
@@ -72,18 +87,20 @@ uint64_t td_crypto_tie_breaker(const char *logical_key, const unsigned char *val
            (uint64_t)digest[7];
 }
 
-int td_crypto_make_slot(
+int td_crypto_make_slot_profiled(
     const td_crypto_ctx_t *ctx,
     const char *logical_key,
     const unsigned char *value,
     size_t value_len,
     uint32_t flags,
     uint64_t epoch,
-    td_slot_t *slot) {
+    td_slot_t *slot,
+    td_crypto_profile_t *profile) {
     EVP_CIPHER_CTX *cipher;
     unsigned char iv_seed[SHA256_DIGEST_LENGTH];
     int out_len = 0;
     int tmp_len = 0;
+    uint64_t start_ns;
 
     if (value_len > TD_MAX_VALUE_SIZE) {
         return -1;
@@ -92,43 +109,67 @@ int td_crypto_make_slot(
     memset(slot, 0, sizeof(*slot));
     slot->guard_epoch = epoch;
     slot->visible_epoch = epoch;
+    start_ns = td_crypto_profile_begin(profile);
     slot->key_hash = td_hash64_string(logical_key);
+    td_crypto_profile_end(profile, start_ns, profile != NULL ? &profile->slot_hash_ns : NULL);
+    start_ns = td_crypto_profile_begin(profile);
     slot->tie_breaker = td_crypto_tie_breaker(logical_key, value, value_len, epoch);
+    td_crypto_profile_end(profile, start_ns, profile != NULL ? &profile->tie_breaker_ns : NULL);
     slot->flags = flags;
     slot->value_len = (uint32_t)value_len;
 
+    start_ns = td_crypto_profile_begin(profile);
     td_sha256_two_parts((const unsigned char *)logical_key, strlen(logical_key), (const unsigned char *)&epoch, sizeof(epoch), iv_seed);
+    td_crypto_profile_end(profile, start_ns, profile != NULL ? &profile->iv_ns : NULL);
     memcpy(slot->iv, iv_seed, sizeof(slot->iv));
 
     cipher = EVP_CIPHER_CTX_new();
     if (cipher == NULL) {
         return -1;
     }
-    if (EVP_EncryptInit_ex(cipher, EVP_aes_256_ctr(), NULL, ctx->enc_key, slot->iv) != 1 ||
-        EVP_EncryptUpdate(cipher, slot->ciphertext, &out_len, value, (int)value_len) != 1 ||
+    if (EVP_EncryptInit_ex(cipher, EVP_aes_256_ctr(), NULL, ctx->enc_key, slot->iv) != 1) {
+        EVP_CIPHER_CTX_free(cipher);
+        return -1;
+    }
+    start_ns = td_crypto_profile_begin(profile);
+    if (EVP_EncryptUpdate(cipher, slot->ciphertext, &out_len, value, (int)value_len) != 1 ||
         EVP_EncryptFinal_ex(cipher, slot->ciphertext + out_len, &tmp_len) != 1) {
         EVP_CIPHER_CTX_free(cipher);
         return -1;
     }
+    td_crypto_profile_end(profile, start_ns, profile != NULL ? &profile->encrypt_ns : NULL);
     EVP_CIPHER_CTX_free(cipher);
     slot->value_len = (uint32_t)(out_len + tmp_len);
 
-    if (td_crypto_mac(ctx, slot, slot->mac) != 0) {
+    if (td_crypto_mac(ctx, slot, slot->mac, profile != NULL ? &profile->mac_ns : NULL) != 0) {
         return -1;
     }
     return 0;
 }
 
-int td_crypto_decode_slot(
+int td_crypto_make_slot(
+    const td_crypto_ctx_t *ctx,
+    const char *logical_key,
+    const unsigned char *value,
+    size_t value_len,
+    uint32_t flags,
+    uint64_t epoch,
+    td_slot_t *slot) {
+    return td_crypto_make_slot_profiled(ctx, logical_key, value, value_len, flags, epoch, slot, NULL);
+}
+
+int td_crypto_decode_slot_profiled(
     const td_crypto_ctx_t *ctx,
     const char *logical_key,
     const td_slot_t *slot,
     unsigned char *plaintext,
-    size_t *plaintext_len) {
+    size_t *plaintext_len,
+    td_crypto_profile_t *profile) {
     EVP_CIPHER_CTX *cipher;
     unsigned char mac[32];
     int out_len = 0;
     int tmp_len = 0;
+    uint64_t start_ns;
 
     (void)logical_key;
 
@@ -138,7 +179,7 @@ int td_crypto_decode_slot(
     if (slot->guard_epoch != slot->visible_epoch) {
         return -1;
     }
-    if (td_crypto_mac(ctx, slot, mac) != 0) {
+    if (td_crypto_mac(ctx, slot, mac, profile != NULL ? &profile->verify_mac_ns : NULL) != 0) {
         return -1;
     }
     if (memcmp(mac, slot->mac, sizeof(mac)) != 0) {
@@ -152,13 +193,24 @@ int td_crypto_decode_slot(
     if (cipher == NULL) {
         return -1;
     }
+    start_ns = td_crypto_profile_begin(profile);
     if (EVP_DecryptInit_ex(cipher, EVP_aes_256_ctr(), NULL, ctx->enc_key, slot->iv) != 1 ||
         EVP_DecryptUpdate(cipher, plaintext, &out_len, slot->ciphertext, (int)slot->value_len) != 1 ||
         EVP_DecryptFinal_ex(cipher, plaintext + out_len, &tmp_len) != 1) {
         EVP_CIPHER_CTX_free(cipher);
         return -1;
     }
+    td_crypto_profile_end(profile, start_ns, profile != NULL ? &profile->decrypt_ns : NULL);
     EVP_CIPHER_CTX_free(cipher);
     *plaintext_len = (size_t)(out_len + tmp_len);
     return 0;
+}
+
+int td_crypto_decode_slot(
+    const td_crypto_ctx_t *ctx,
+    const char *logical_key,
+    const td_slot_t *slot,
+    unsigned char *plaintext,
+    size_t *plaintext_len) {
+    return td_crypto_decode_slot_profiled(ctx, logical_key, slot, plaintext, plaintext_len, NULL);
 }

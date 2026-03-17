@@ -30,6 +30,18 @@ typedef struct {
     uint64_t repair_probe_ns;
     uint64_t repair_write_ns;
     uint64_t repair_cas_ns;
+    uint64_t crypto_slot_hash_ns;
+    uint64_t crypto_tie_breaker_ns;
+    uint64_t crypto_iv_ns;
+    uint64_t crypto_mac_ns;
+    uint64_t crypto_verify_mac_ns;
+    uint64_t crypto_encrypt_ns;
+    uint64_t crypto_decrypt_ns;
+    size_t prime_probe_reads;
+    size_t cache_probe_reads;
+    size_t backup_probe_reads;
+    size_t repair_probe_reads;
+    size_t refresh_cache_probe_reads;
     size_t backup_targets;
     size_t backup_successes;
     size_t repair_attempts;
