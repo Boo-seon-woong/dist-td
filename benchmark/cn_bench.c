@@ -275,7 +275,7 @@ static double td_percentile_us(uint64_t *sorted_ns, size_t count, double pct) {
     return (double)sorted_ns[index] / 1000.0;
 }
 
-static void td_bench_print_stats(const td_bench_stats_t *stats) {
+static void td_bench_print_stats_to(FILE *out, const td_bench_stats_t *stats) {
     size_t idx;
     uint64_t min_ns;
     uint64_t max_ns;
@@ -321,8 +321,8 @@ static void td_bench_print_stats(const td_bench_stats_t *stats) {
     p99_us = td_percentile_us(sorted, stats->count, 0.99);
     p999_us = td_percentile_us(sorted, stats->count, 0.999);
 
-    printf("workload #bytes #iterations    t_min[usec]    t_max[usec]  t_typical[usec]    t_avg[usec]    t_stdev[usec]   99%% percentile[usec]   99.9%% percentile[usec]\n");
-    printf("%-8s %-6zu %-13zu %-14.2f %-12.2f %-17.2f %-14.2f %-16.2f %-22.2f %.2f\n",
+    fprintf(out, "workload #bytes #iterations    t_min[usec]    t_max[usec]  t_typical[usec]    t_avg[usec]    t_stdev[usec]   99%% percentile[usec]   99.9%% percentile[usec]\n");
+    fprintf(out, "%-8s %-6zu %-13zu %-14.2f %-12.2f %-17.2f %-14.2f %-16.2f %-22.2f %.2f\n",
         stats->workload_name,
         stats->bytes,
         stats->count,
@@ -335,6 +335,33 @@ static void td_bench_print_stats(const td_bench_stats_t *stats) {
         p999_us);
 
     free(sorted);
+}
+
+static void td_bench_print_stats(const td_bench_stats_t *stats) {
+    td_bench_print_stats_to(stdout, stats);
+}
+
+static void td_bench_progress_report_benchmark(td_bench_progress_t *progress, const td_bench_stats_t *stats, size_t completed) {
+    td_bench_stats_t partial_stats;
+    uint64_t now;
+
+    if (progress->total == 0 || completed == 0) {
+        return;
+    }
+
+    now = td_now_ns();
+    if (now < progress->next_report_ns) {
+        return;
+    }
+
+    fprintf(stderr, "progress: %s %zu/%zu\n", progress->phase_name, completed, progress->total);
+    partial_stats = *stats;
+    partial_stats.count = completed;
+    td_bench_print_stats_to(stderr, &partial_stats);
+
+    while (progress->next_report_ns <= now) {
+        progress->next_report_ns += TD_BENCH_PROGRESS_INTERVAL_NS;
+    }
 }
 
 static int td_bench_run(td_cluster_t *cluster, const td_bench_options_t *opts, td_bench_stats_t *stats, char *err, size_t err_len) {
@@ -397,7 +424,7 @@ static int td_bench_run(td_cluster_t *cluster, const td_bench_options_t *opts, t
                 break;
         }
         stats->samples_ns[idx] = td_now_ns() - start_ns;
-        td_bench_progress_maybe_report(&progress, idx + 1);
+        td_bench_progress_report_benchmark(&progress, stats, idx + 1);
     }
     return 0;
 }

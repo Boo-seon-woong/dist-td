@@ -37,7 +37,7 @@ MN 3개를 먼저 띄운다.
 CN 벤치마크는 아래처럼 실행한다.
 
 ```bash
-./bin/cn_bench --config build/config/cn.conf --workload read --iterations 1000 --bytes 32 --warmup 128
+./bin/cn_bench --config build/config/cn.conf --workload read --iterations 100 --bytes 32 --warmup 16
 ```
 
 REPL 명령:
