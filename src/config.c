@@ -350,26 +350,32 @@ int td_config_load(const char *path, td_config_t *cfg, char *err, size_t err_len
         } else if (strcmp(key, "memory_file") == 0) {
             snprintf(cfg->memory_file, sizeof(cfg->memory_file), "%s", value);
         } else if (strcmp(key, "prime_slots") == 0) {
-            if (td_parse_size_literal(value, &cfg->prime_slots) != 0) {
-                td_format_error(err, err_len, "invalid prime_slots at line %zu", line_no);
-                fclose(fp);
-                return -1;
+            if (*value != '\0') {
+                if (td_parse_size_literal(value, &cfg->prime_slots) != 0) {
+                    td_format_error(err, err_len, "invalid prime_slots at line %zu", line_no);
+                    fclose(fp);
+                    return -1;
+                }
+                cfg->prime_slots_explicit = 1;
             }
-            cfg->prime_slots_explicit = 1;
         } else if (strcmp(key, "cache_slots") == 0) {
-            if (td_parse_size_literal(value, &cfg->cache_slots) != 0) {
-                td_format_error(err, err_len, "invalid cache_slots at line %zu", line_no);
-                fclose(fp);
-                return -1;
+            if (*value != '\0') {
+                if (td_parse_size_literal(value, &cfg->cache_slots) != 0) {
+                    td_format_error(err, err_len, "invalid cache_slots at line %zu", line_no);
+                    fclose(fp);
+                    return -1;
+                }
+                cfg->cache_slots_explicit = 1;
             }
-            cfg->cache_slots_explicit = 1;
         } else if (strcmp(key, "backup_slots") == 0) {
-            if (td_parse_size_literal(value, &cfg->backup_slots) != 0) {
-                td_format_error(err, err_len, "invalid backup_slots at line %zu", line_no);
-                fclose(fp);
-                return -1;
+            if (*value != '\0') {
+                if (td_parse_size_literal(value, &cfg->backup_slots) != 0) {
+                    td_format_error(err, err_len, "invalid backup_slots at line %zu", line_no);
+                    fclose(fp);
+                    return -1;
+                }
+                cfg->backup_slots_explicit = 1;
             }
-            cfg->backup_slots_explicit = 1;
         } else if (strcmp(key, "max_value_size") == 0) {
             cfg->max_value_size = (size_t)strtoull(value, NULL, 10);
         } else if (strcmp(key, "eviction_threshold_pct") == 0) {
