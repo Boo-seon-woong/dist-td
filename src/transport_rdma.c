@@ -797,7 +797,7 @@ int td_rdma_server_run(const td_config_t *cfg, td_local_region_t *region, volati
                         if (err[0] == '\0') {
                             td_format_error(err, err_len, "rdma accept path failed before accept");
                         }
-                        fprintf(stderr, "tee-dist rdma reject on %s:%d: %s\n", cfg->listen_host, cfg->listen_port, err);
+                        fprintf(stderr, "dist-td rdma reject on %s:%d: %s\n", cfg->listen_host, cfg->listen_port, err);
                         if (!accepted) {
                             (void)rdma_reject(event->id, NULL, 0);
                         }
@@ -808,7 +808,7 @@ int td_rdma_server_run(const td_config_t *cfg, td_local_region_t *region, volati
                         free(conn);
                     }
                 } else {
-                    fprintf(stderr, "tee-dist rdma reject on %s:%d: out of memory\n", cfg->listen_host, cfg->listen_port);
+                    fprintf(stderr, "dist-td rdma reject on %s:%d: out of memory\n", cfg->listen_host, cfg->listen_port);
                     (void)rdma_reject(event->id, NULL, 0);
                 }
             }

@@ -46,22 +46,22 @@ static const char *td_slot_layout_mode(const td_config_t *cfg) {
 
 static void td_print_memory_layout(const td_config_t *cfg, const td_local_region_t *region) {
     char total_buf[32];
-    char header_buf[32];
+    char private_buf[32];
     char prime_buf[32];
     char cache_buf[32];
     char backup_buf[32];
     char used_buf[32];
     char unused_buf[32];
-    size_t header_bytes = sizeof(td_region_header_t);
+    size_t private_bytes = sizeof(td_region_header_t) + sizeof(pthread_mutex_t) + (2 * sizeof(size_t));
     size_t slot_bytes = sizeof(td_slot_t);
     size_t prime_bytes = cfg->prime_slots * slot_bytes;
     size_t cache_bytes = cfg->cache_slots * slot_bytes;
     size_t backup_bytes = cfg->backup_slots * slot_bytes;
-    size_t used_bytes = header_bytes + prime_bytes + cache_bytes + backup_bytes;
+    size_t used_bytes = prime_bytes + cache_bytes + backup_bytes;
     size_t unused_bytes = region->mapped_bytes > used_bytes ? region->mapped_bytes - used_bytes : 0;
 
     td_format_bytes(total_buf, sizeof(total_buf), region->mapped_bytes);
-    td_format_bytes(header_buf, sizeof(header_buf), header_bytes);
+    td_format_bytes(private_buf, sizeof(private_buf), private_bytes);
     td_format_bytes(prime_buf, sizeof(prime_buf), prime_bytes);
     td_format_bytes(cache_buf, sizeof(cache_buf), cache_bytes);
     td_format_bytes(backup_buf, sizeof(backup_buf), backup_bytes);
@@ -69,11 +69,11 @@ static void td_print_memory_layout(const td_config_t *cfg, const td_local_region
     td_format_bytes(unused_buf, sizeof(unused_buf), unused_bytes);
 
     fprintf(stdout,
-        "tee-dist mn layout mode=%s total=%s(%llu) header=%s prime=%zu:%s cache=%zu:%s backup=%zu:%s used=%s unused=%s slot_bytes=%zu\n",
+        "dist-td mn layout mode=%s shared=%s(%llu) private_meta=%s prime=%zu:%s cache=%zu:%s backup=%zu:%s used=%s unused=%s slot_bytes=%zu\n",
         td_slot_layout_mode(cfg),
         total_buf,
         (unsigned long long)region->mapped_bytes,
-        header_buf,
+        private_buf,
         cfg->prime_slots,
         prime_buf,
         cfg->cache_slots,
@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
     int rc;
 
     if (td_find_config(argc, argv, &config_path) != 0) {
-        fprintf(stderr, "usage: %s --config build/config/mn1.conf\n", argv[0]);
+        fprintf(stderr, "usage: %s --config build/config/mn.rdma.conf\n", argv[0]);
         return 1;
     }
     if (td_config_load(config_path, &cfg, err, sizeof(err)) != 0) {
@@ -142,13 +142,14 @@ int main(int argc, char **argv) {
     eviction_ctx.threshold_pct = cfg.eviction_threshold_pct;
     pthread_create(&evict_thread, NULL, td_eviction_thread, &eviction_ctx);
 
-    fprintf(stdout, "tee-dist mn node_id=%d transport=%s listen=%s:%d backing=%s bytes=%llu\n",
+    fprintf(stdout, "dist-td mn node_id=%d transport=%s listen=%s:%d backing=%s bytes=%llu\n",
         cfg.node_id,
         cfg.transport == TD_TRANSPORT_RDMA ? "rdma" : "tcp",
         cfg.listen_host,
         cfg.listen_port,
         cfg.memory_file,
         (unsigned long long)region.mapped_bytes);
+    fprintf(stdout, "dist-td mn runtime=%s shared_only_exposure=yes\n", td_tdx_runtime_name(&region.tdx));
     td_print_memory_layout(&cfg, &region);
     fflush(stdout);
 

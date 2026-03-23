@@ -70,8 +70,8 @@ int td_crypto_init(td_crypto_ctx_t *ctx, const char *hex_key, char *err, size_t 
     unsigned char raw[TD_KEY_MATERIAL_BYTES];
     unsigned char enc_seed[SHA256_DIGEST_LENGTH];
     unsigned char mac_seed[SHA256_DIGEST_LENGTH];
-    static const unsigned char enc_label[] = "tee-dist-enc";
-    static const unsigned char mac_label[] = "tee-dist-mac";
+    static const unsigned char enc_label[] = "dist-td-enc";
+    static const unsigned char mac_label[] = "dist-td-mac";
 
     memset(ctx, 0, sizeof(*ctx));
     if (td_hex_to_bytes(hex_key, raw, sizeof(raw)) != 0) {

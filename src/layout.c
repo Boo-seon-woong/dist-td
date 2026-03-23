@@ -32,9 +32,18 @@ int td_region_open(td_local_region_t *region, const td_config_t *cfg, char *err,
 
     memset(region, 0, sizeof(*region));
     region->fd = -1;
+    region->header = &region->header_copy;
+
+    if (td_tdx_runtime_init(&region->tdx, cfg->mode, cfg->tdx, err, err_len) != 0) {
+        return -1;
+    }
 
     if (cfg->transport == TD_TRANSPORT_RDMA) {
         mapped = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (mapped != MAP_FAILED && td_tdx_accept_shared_memory(&region->tdx, mapped, bytes, err, err_len) != 0) {
+            munmap(mapped, bytes);
+            return -1;
+        }
         region->anonymous_mapping = 1;
         snprintf(region->backing_path, sizeof(region->backing_path), "%s", "[anonymous-shm]");
     } else {
@@ -50,6 +59,12 @@ int td_region_open(td_local_region_t *region, const td_config_t *cfg, char *err,
             return -1;
         }
         mapped = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, region->fd, 0);
+        if (mapped != MAP_FAILED && td_tdx_accept_shared_memory(&region->tdx, mapped, bytes, err, err_len) != 0) {
+            munmap(mapped, bytes);
+            close(region->fd);
+            region->fd = -1;
+            return -1;
+        }
         snprintf(region->backing_path, sizeof(region->backing_path), "%s", cfg->memory_file);
     }
     if (mapped == MAP_FAILED) {
@@ -63,7 +78,6 @@ int td_region_open(td_local_region_t *region, const td_config_t *cfg, char *err,
 
     region->base = mapped;
     region->mapped_bytes = bytes;
-    region->header = (td_region_header_t *)mapped;
     pthread_mutex_init(&region->lock, NULL);
 
     memset(region->base, 0, bytes);
@@ -78,10 +92,15 @@ int td_region_open(td_local_region_t *region, const td_config_t *cfg, char *err,
     region->header->eviction_cursor = 0;
     region->header->cache_mode = cfg->cache;
     region->header->region_size = bytes;
+    region->cache_usage_private = 0;
+    region->eviction_cursor_private = 0;
     return 0;
 }
 
 void td_region_close(td_local_region_t *region) {
+    if (region->base != NULL && region->mapped_bytes > 0) {
+        (void)td_tdx_release_shared_memory(&region->tdx, region->base, region->mapped_bytes, NULL, 0);
+    }
     if (region->base != NULL && region->mapped_bytes > 0) {
         munmap(region->base, region->mapped_bytes);
     }
@@ -94,7 +113,7 @@ void td_region_close(td_local_region_t *region) {
 }
 
 size_t td_region_kind_base_offset(const td_region_header_t *header, td_region_kind_t kind) {
-    size_t offset = sizeof(td_region_header_t);
+    size_t offset = 0;
 
     if (kind == TD_REGION_PRIME) {
         return offset;
@@ -178,6 +197,7 @@ size_t td_region_count_cache_usage(td_local_region_t *region) {
             ++used;
         }
     }
+    region->cache_usage_private = used;
     region->header->cache_usage = used;
     pthread_mutex_unlock(&region->lock);
     return used;
@@ -204,14 +224,15 @@ void td_region_evict_if_needed(td_local_region_t *region, size_t threshold_pct) 
 
     pthread_mutex_lock(&region->lock);
     while (target > 0) {
-        size_t idx = (size_t)(region->header->eviction_cursor % region->header->cache_slot_count);
+        size_t idx = region->eviction_cursor_private % (size_t)region->header->cache_slot_count;
         td_slot_t *slot = td_region_slot_ptr(region, TD_REGION_CACHE, idx);
         if ((slot->flags & TD_SLOT_FLAG_VALID) != 0) {
             memset(slot, 0, sizeof(*slot));
             --target;
         }
-        region->header->eviction_cursor = (region->header->eviction_cursor + 1) % region->header->cache_slot_count;
+        region->eviction_cursor_private = (region->eviction_cursor_private + 1) % (size_t)region->header->cache_slot_count;
     }
+    region->header->eviction_cursor = region->eviction_cursor_private;
     pthread_mutex_unlock(&region->lock);
     td_region_count_cache_usage(region);
 }

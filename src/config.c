@@ -206,18 +206,17 @@ static void td_allocate_weighted_slots(td_config_t *cfg, size_t remaining_slots)
 }
 
 static int td_resolve_mn_slots(td_config_t *cfg, char *err, size_t err_len) {
-    size_t header_bytes = sizeof(td_region_header_t);
     size_t slot_bytes = sizeof(td_slot_t);
     size_t capacity_slots;
     size_t manual_slots;
     size_t remaining_slots;
 
-    if (cfg->mn_memory_size <= header_bytes) {
-        td_format_error(err, err_len, "mn_memory_size must be larger than %zu bytes", header_bytes);
+    if (cfg->mn_memory_size < slot_bytes) {
+        td_format_error(err, err_len, "mn_memory_size must be at least %zu bytes", slot_bytes);
         return -1;
     }
 
-    capacity_slots = (cfg->mn_memory_size - header_bytes) / slot_bytes;
+    capacity_slots = cfg->mn_memory_size / slot_bytes;
     if (capacity_slots == 0) {
         td_format_error(err, err_len, "mn_memory_size is too small to fit any slots");
         return -1;
@@ -227,7 +226,7 @@ static int td_resolve_mn_slots(td_config_t *cfg, char *err, size_t err_len) {
     if (manual_slots > capacity_slots) {
         td_format_error(err, err_len,
             "configured slots need %zu bytes but mn_memory_size is %zu bytes",
-            header_bytes + (manual_slots * slot_bytes),
+            manual_slots * slot_bytes,
             cfg->mn_memory_size);
         return -1;
     }
@@ -262,7 +261,7 @@ void td_config_init_defaults(td_config_t *cfg) {
     cfg->recv_queue_depth = TD_RECV_QUEUE_DEPTH;
     snprintf(cfg->rdma_device, sizeof(cfg->rdma_device), "%s", "mlx5_0");
     snprintf(cfg->listen_host, sizeof(cfg->listen_host), "%s", "0.0.0.0");
-    snprintf(cfg->memory_file, sizeof(cfg->memory_file), "%s", "/tmp/tee-dist-mn.dat");
+    snprintf(cfg->memory_file, sizeof(cfg->memory_file), "%s", "/tmp/dist-td-mn.dat");
 }
 
 int td_config_load(const char *path, td_config_t *cfg, char *err, size_t err_len) {
@@ -407,8 +406,16 @@ int td_config_load(const char *path, td_config_t *cfg, char *err, size_t err_len
     if (cfg->replication <= 0) {
         cfg->replication = 1;
     }
+    if (cfg->mode == TD_MODE_CN && cfg->tdx != TD_TDX_OFF) {
+        td_format_error(err, err_len, "cn config requires tdx: off");
+        return -1;
+    }
     if (cfg->mode == TD_MODE_CN && cfg->mn_count == 0) {
         td_format_error(err, err_len, "cn config requires at least one mn_endpoint");
+        return -1;
+    }
+    if (cfg->mode == TD_MODE_MN && cfg->tdx != TD_TDX_ON) {
+        td_format_error(err, err_len, "mn config requires tdx: on");
         return -1;
     }
     if (cfg->mode == TD_MODE_MN && cfg->listen_port <= 0) {

@@ -4,6 +4,7 @@
 #include <pthread.h>
 
 #include "td_common.h"
+#include "td_tdx.h"
 
 typedef struct td_config td_config_t;
 
@@ -39,8 +40,12 @@ typedef struct {
     int fd;
     int anonymous_mapping;
     char backing_path[TD_PATH_BYTES];
+    td_region_header_t header_copy;
     td_region_header_t *header;
     pthread_mutex_t lock;
+    size_t cache_usage_private;
+    size_t eviction_cursor_private;
+    td_tdx_runtime_t tdx;
 } td_local_region_t;
 
 size_t td_region_required_bytes(const td_config_t *cfg);

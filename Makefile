@@ -8,6 +8,7 @@ BENCH_DIR := benchmark
 COMMON_SRCS := \
 	$(SRC_DIR)/common.c \
 	$(SRC_DIR)/config.c \
+	$(SRC_DIR)/tdx.c \
 	$(SRC_DIR)/layout.c \
 	$(SRC_DIR)/crypto.c \
 	$(SRC_DIR)/cluster.c \

@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
     char line[TD_CMD_BYTES];
 
     if (td_find_config(argc, argv, &config_path) != 0) {
-        fprintf(stderr, "usage: %s --config build/config/cn.conf\n", argv[0]);
+        fprintf(stderr, "usage: %s --config build/config/cn.rdma.conf\n", argv[0]);
         return 1;
     }
     if (td_config_load(config_path, &cfg, err, sizeof(err)) != 0) {
@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("tee-dist cn ready. type help for commands.\n");
+    printf("dist-td cn ready. type help for commands.\n");
     while (1) {
         printf("td> ");
         fflush(stdout);

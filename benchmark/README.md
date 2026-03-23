@@ -11,10 +11,10 @@ make
 ## Run
 
 ```bash
-./bin/cn_bench --config build/config/cn.conf --workload read --iterations 1000 --bytes 32 --warmup 128
-./bin/cn_bench --config build/config/cn.conf --workload write --iterations 1000 --bytes 32 --warmup 128
-./bin/cn_bench --config build/config/cn.conf --workload update --iterations 1000 --bytes 32 --warmup 128
-./bin/cn_bench --config build/config/cn.conf --workload delete --iterations 1000 --bytes 32 --warmup 128
+./bin/cn_bench --config build/config/cn.rdma.conf --workload read --iterations 1000 --bytes 32 --warmup 128
+./bin/cn_bench --config build/config/cn.rdma.conf --workload write --iterations 1000 --bytes 32 --warmup 128
+./bin/cn_bench --config build/config/cn.rdma.conf --workload update --iterations 1000 --bytes 32 --warmup 128
+./bin/cn_bench --config build/config/cn.rdma.conf --workload delete --iterations 1000 --bytes 32 --warmup 128
 ```
 
 출력 컬럼:
